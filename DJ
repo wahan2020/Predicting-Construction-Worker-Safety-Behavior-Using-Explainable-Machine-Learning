@@ -1,0 +1,160 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import random
+import shap
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report, confusion_matrix, roc_auc_score
+from sklearn.inspection import permutation_importance
+from sklearn.multiclass import OneVsRestClassifier
+import seaborn as sns
+from imblearn.over_sampling import RandomOverSampler
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.tree import DecisionTreeClassifier  # Import Decision Tree
+
+# Ensure reproducibility
+np.random.seed(42)
+random.seed(42)
+
+# Load the Dataset
+df = pd.read_excel("Data.xlsx")  # Load your dataset
+
+# Check for missing values and handle them (if any)
+df = df.dropna()  # Dropping rows with missing values, you can also use df.fillna() for imputation
+
+# Preprocessing
+excluded_columns = ['WSB1', 'WSB2', 'WSB3', 'WSB4', 'WSB5', 'WSB6']
+input_features = [col for col in df.columns if col not in excluded_columns]
+X_raw = df[input_features]
+y_raw = df[excluded_columns].mean(axis=1)
+
+# Normalize input features
+scaler = MinMaxScaler(feature_range=(0, 1))
+X_scaled = scaler.fit_transform(X_raw)
+
+# Normalize the target
+scb_scaler = MinMaxScaler(feature_range=(0, 1))
+y_normalized = scb_scaler.fit_transform(y_raw.values.reshape(-1, 1)).flatten()
+
+# Categorize the target into 3 categories: Low behavior 0, Medium behavior 1, High Behavior 2
+def categorize_scb(value):
+    if 0 <= value <= 0.36:
+        return 0  # Low behavior
+    elif 0.33 < value <= 0.67:
+        return 1  # Medium behavior
+    else:
+        return 2  # High behavior
+
+y_categorized = np.array([categorize_scb(val) for val in y_normalized])
+
+# --- Target Balancing (Random Over-Sampling) ---
+ros = RandomOverSampler(random_state=42)
+X_balanced, y_balanced = ros.fit_resample(X_scaled, y_categorized)
+
+# Feature Selection using SelectKBest
+selector = SelectKBest(f_classif, k=10)
+X_selected = selector.fit_transform(X_balanced, y_balanced)
+
+# Get selected feature names
+selected_features = np.array(input_features)[selector.get_support()]
+print("Top 10 selected features: ", selected_features)
+
+# --- Model Training and Evaluation ---
+# Decision Tree model setup (PARAMETERS UPDATED ONLY)
+dt_model = DecisionTreeClassifier(
+    criterion="gini",
+    splitter="best",
+    max_depth=10,
+    min_samples_split=2,
+    min_samples_leaf=2,
+    max_features=None,
+    random_state=42
+)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X_selected, y_balanced, test_size=0.2, random_state=42, stratify=y_balanced
+)
+
+# Fit the model
+dt_model.fit(X_train, y_train)
+
+# --- Model Evaluation ---
+y_pred = dt_model.predict(X_test)
+
+accuracy = accuracy_score(y_test, y_pred)
+precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+roc_auc = roc_auc_score(y_test, dt_model.predict_proba(X_test), multi_class='ovr', average='weighted')
+
+# Print evaluation metrics
+print(f"Accuracy: {accuracy:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1 Score: {f1:.4f}")
+print(f"ROC-AUC: {roc_auc:.4f}")
+
+# Print Classification Report
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred, zero_division=0))
+
+# Confusion Matrix
+cm = confusion_matrix(y_test, y_pred)
+sns.heatmap(
+    cm, annot=True, fmt='d', cmap='Blues',
+    xticklabels=['Low behavior', 'Medium behavior', 'High Behavior'],
+    yticklabels=['Low behavior', 'Medium behavior', 'High Behavior']
+)
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.title('Confusion Matrix')
+plt.tight_layout()
+plt.show()
+
+# --- Permutation Feature Importance (PFI) with OneVsRestClassifier ---
+pfi_results = {}
+
+# Define OneVsRest Classifier with DecisionTree as the base estimator (PARAMETERS UPDATED ONLY)
+ova_model = OneVsRestClassifier(
+    DecisionTreeClassifier(
+        criterion="gini",
+        splitter="best",
+        max_depth=10,
+        min_samples_split=2,
+        min_samples_leaf=2,
+        max_features=None,
+        random_state=42
+    )
+)
+
+for i in range(3):  # classes: 0, 1, 2
+    y_train_class = (y_train == i).astype(int)
+    y_test_class = (y_test == i).astype(int)
+
+    ova_model.fit(X_train, y_train_class)
+
+    pfi_result_class = permutation_importance(
+        ova_model, X_test, y_test_class, n_repeats=10, random_state=42, n_jobs=-1
+    )
+
+    pfi_results[i] = pd.DataFrame({
+        'Feature': selected_features,
+        'Importance': pfi_result_class.importances_mean
+    }).sort_values(by='Importance', ascending=False)
+
+    print(f"\nTop 5 Features by Permutation Importance for Class {i}:")
+    print(pfi_results[i].head(15))
+
+    sns.barplot(x='Importance', y='Feature', data=pfi_results[i].head(15), palette='viridis')
+    plt.title(f'Permutation Feature Importance (PFI) for Class {i}')
+    plt.tight_layout()
+    plt.show()
+
+# Create a Tree SHAP explainer and calculate SHAP values
+explainer = shap.TreeExplainer(dt_model)
+shap_values = explainer.shap_values(X_test)
+
+# SHAP summary plot for each class
+for class_idx in range(3):
+    shap.summary_plot(shap_values[class_idx], X_test, feature_names=selected_features)
