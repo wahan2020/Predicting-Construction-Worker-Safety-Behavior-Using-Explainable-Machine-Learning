@@ -1,0 +1,186 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import random
+import shap
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    classification_report, confusion_matrix, roc_auc_score
+)
+from sklearn.inspection import permutation_importance
+from sklearn.multiclass import OneVsRestClassifier
+import seaborn as sns
+
+from imblearn.over_sampling import RandomOverSampler
+from sklearn.feature_selection import SelectKBest, f_classif
+import lightgbm as lgb  # LightGBM
+
+# Ensure reproducibility
+np.random.seed(42)
+random.seed(42)
+
+# Load the Dataset
+df = pd.read_excel("Data.xlsx")
+df = df.dropna()
+
+# Preprocessing
+excluded_columns = ['WSB1', 'WSB2', 'WSB3', 'WSB4', 'WSB5', 'WSB6']
+input_features = [col for col in df.columns if col not in excluded_columns]
+X_raw = df[input_features]
+y_raw = df[excluded_columns].mean(axis=1)
+
+# Normalize input features
+scaler = MinMaxScaler(feature_range=(0, 1))
+X_scaled = scaler.fit_transform(X_raw)
+
+# Normalize the target
+scb_scaler = MinMaxScaler(feature_range=(0, 1))
+y_normalized = scb_scaler.fit_transform(y_raw.values.reshape(-1, 1)).flatten()
+
+# Categorize the target into 3 categories: Low=1, Medium=2, High=3
+def categorize_scb(value):
+    if 0 <= value <= 0.36:
+        return 1  # Low behavior
+    elif 0.33 < value <= 0.67:
+        return 2  # Medium behavior
+    else:
+        return 3  # High behavior
+
+y_categorized = np.array([categorize_scb(val) for val in y_normalized])
+
+# --- Target Balancing (Random Over-Sampling) ---
+ros = RandomOverSampler(random_state=42)
+X_balanced, y_balanced = ros.fit_resample(X_scaled, y_categorized)
+
+# --- Feature Selection using SelectKBest ---
+selector = SelectKBest(f_classif, k=10)
+X_selected = selector.fit_transform(X_balanced, y_balanced)
+
+# Get selected feature names
+selected_features = np.array(input_features)[selector.get_support()]
+print("Top 10 selected features:", selected_features)
+
+# --- Train/Test split ---
+X_train, X_test, y_train, y_test = train_test_split(
+    X_selected, y_balanced,
+    test_size=0.2,
+    random_state=42,
+    stratify=y_balanced
+)
+
+# --- Model Training and Evaluation ---
+lgb_model = lgb.LGBMClassifier(
+    boosting_type='gbdt',
+    learning_rate=0.1,
+    max_depth=10,
+    n_estimators=100,
+    num_leaves=30,
+    random_state=42
+)
+
+lgb_model.fit(X_train, y_train)
+
+# --- Model Evaluation ---
+y_pred = lgb_model.predict(X_test)
+
+accuracy = accuracy_score(y_test, y_pred)
+precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+roc_auc = roc_auc_score(
+    y_test,
+    lgb_model.predict_proba(X_test),
+    multi_class='ovr',
+    average='weighted'
+)
+
+print(f"Accuracy: {accuracy:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1 Score: {f1:.4f}")
+print(f"ROC-AUC: {roc_auc:.4f}")
+
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred, zero_division=0))
+
+# Confusion Matrix
+cm = confusion_matrix(y_test, y_pred)
+sns.heatmap(
+    cm, annot=True, fmt='d', cmap='Blues',
+    xticklabels=['Low behavior', 'Medium behavior', 'High Behavior'],
+    yticklabels=['Low behavior', 'Medium behavior', 'High Behavior']
+)
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.title('Confusion Matrix')
+plt.tight_layout()
+plt.show()
+
+# --- Permutation Feature Importance (PFI) with OneVsRestClassifier ---
+pfi_results = {}
+
+ova_model = OneVsRestClassifier(
+    lgb.LGBMClassifier(
+        boosting_type='gbdt',
+        learning_rate=0.1,
+        max_depth=10,
+        n_estimators=100,
+        num_leaves=30,
+        random_state=42
+    )
+)
+
+for i in range(3):  # Classes 1..3
+    y_train_class = (y_train == i + 1).astype(int)
+    y_test_class = (y_test == i + 1).astype(int)
+
+    ova_model.fit(X_train, y_train_class)
+
+    pfi_result_class = permutation_importance(
+        ova_model,
+        X_test,
+        y_test_class,
+        n_repeats=10,
+        random_state=42,
+        n_jobs=-1
+    )
+
+    pfi_results[i] = pd.DataFrame({
+        'Feature': selected_features,
+        'Importance': pfi_result_class.importances_mean
+    }).sort_values(by='Importance', ascending=False)
+
+    print(f"\nTop 15 Features by Permutation Importance for Class {i + 1}:")
+    print(pfi_results[i].head(15))
+
+    sns.barplot(x='Importance', y='Feature', data=pfi_results[i].head(15), palette='viridis')
+    plt.title(f'Permutation Feature Importance (PFI) for Class {i + 1}')
+    plt.tight_layout()
+    plt.show()
+
+# --- SHAP Analysis (LightGBM) ---
+try:
+    explainer = shap.TreeExplainer(lgb_model)
+    shap_values = explainer.shap_values(X_test)
+
+    # For multiclass, shap_values is typically a list with one array per class
+    if isinstance(shap_values, list) and len(shap_values) == 3:
+        for class_idx in range(3):
+            shap.summary_plot(
+                shap_values[class_idx],
+                X_test,
+                feature_names=selected_features,
+                show=True
+            )
+    else:
+        shap.summary_plot(
+            shap_values,
+            X_test,
+            feature_names=selected_features,
+            show=True
+        )
+except Exception as e:
+    print(f"SHAP TreeExplainer not supported for this LightGBM configuration: {e}")
