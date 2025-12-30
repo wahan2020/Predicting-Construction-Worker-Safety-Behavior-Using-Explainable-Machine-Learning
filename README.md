@@ -1,5 +1,3 @@
-# Predicting-Construction-Worker-Safety-Behavior-Using-Explainable-Machine-Learning
-Code 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -22,9 +20,6 @@ random.seed(42)
 
 # Load the Dataset
 df = pd.read_excel("Data.xlsx")  # Load your dataset
-
-# Check for missing values and handle them (if any)
-df = df.dropna()  # Dropping rows with missing values, you can also use df.fillna() for imputation
 
 # Preprocessing
 excluded_columns = ['WSB1', 'WSB2', 'WSB3', 'WSB4', 'WSB5', 'WSB6']
@@ -61,12 +56,6 @@ y_categorized = np.array([categorize_scb(val) for val in y_normalized])
 ros = RandomOverSampler(random_state=42)
 X_balanced, y_balanced = ros.fit_resample(X_scaled, y_categorized)
 
-# Feature Selection using SelectKBest
-from sklearn.feature_selection import SelectKBest, f_classif
-
-# Feature Selection using SelectKBest
-from sklearn.feature_selection import SelectKBest, f_classif
-
 # Select the top 10 features based on the univariate statistical test
 selector = SelectKBest(f_classif, k=10)
 X_selected = selector.fit_transform(X_balanced, y_balanced)
@@ -76,8 +65,20 @@ selected_features = np.array(input_features)[selector.get_support()]
 print("Top 10 selected features: ", selected_features)
 
 # --- Model Training and Evaluation ---
-model = RandomForestClassifier(n_estimators=100, random_state=42)
-X_train, X_test, y_train, y_test = train_test_split(X_selected, y_balanced, test_size=0.2, random_state=42, stratify=y_balanced)
+model = RandomForestClassifier(
+    n_estimators=100,
+    criterion="gini",
+    max_depth=None,
+    min_samples_split=2,
+    min_samples_leaf=1,
+    max_features="sqrt",
+    bootstrap=True,
+    random_state=42
+)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X_selected, y_balanced, test_size=0.2, random_state=42, stratify=y_balanced
+)
 
 # Fit the model
 model.fit(X_train, y_train)
@@ -105,7 +106,11 @@ print(classification_report(y_test, y_pred))
 
 # Confusion Matrix
 cm = confusion_matrix(y_test, y_pred)
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=['Low behavior', 'Medium behavior', 'High Behavior'], yticklabels=['Low behavior', 'Medium behavior', 'High Behavior'])
+sns.heatmap(
+    cm, annot=True, fmt='d', cmap='Blues',
+    xticklabels=['Low behavior', 'Medium behavior', 'High Behavior'],
+    yticklabels=['Low behavior', 'Medium behavior', 'High Behavior']
+)
 plt.xlabel('Predicted')
 plt.ylabel('Actual')
 plt.title('Confusion Matrix')
@@ -115,18 +120,30 @@ plt.show()
 pfi_results = {}
 
 # Define OneVsRest Classifier with RandomForest as the base estimator
-ova_model = OneVsRestClassifier(RandomForestClassifier(n_estimators=100, random_state=42))
+ova_model = OneVsRestClassifier(
+    RandomForestClassifier(
+        n_estimators=100,
+        criterion="gini",
+        max_depth=None,
+        min_samples_split=2,
+        min_samples_leaf=1,
+        max_features="sqrt",
+        bootstrap=True,
+        random_state=42
+    )
+)
 
 for i in range(3):  # Assuming 3 classes: 1 = Low behavior, 2 = Medium behavior, 3 = High Behavior
-    # Get the binary class labels for the current class
-    y_train_class = (y_train == i + 1).astype(int)  # 0 for the rest of the classes and 1 for the current class
+    y_train_class = (y_train == i + 1).astype(int)
     y_test_class = (y_test == i + 1).astype(int)
 
     # Fit the model for the current class
     ova_model.fit(X_train, y_train_class)
 
     # Get the permutation importance for the current class
-    pfi_result_class = permutation_importance(ova_model, X_test, y_test_class, n_repeats=10, random_state=42, n_jobs=-1)
+    pfi_result_class = permutation_importance(
+        ova_model, X_test, y_test_class, n_repeats=10, random_state=42, n_jobs=-1
+    )
 
     # Store results
     pfi_results[i] = pd.DataFrame({
@@ -134,18 +151,19 @@ for i in range(3):  # Assuming 3 classes: 1 = Low behavior, 2 = Medium behavior,
         'Importance': pfi_result_class.importances_mean
     }).sort_values(by='Importance', ascending=False)
 
-    # Print the top 5 important features for the current class
     print(f"\nTop 5 Features by Permutation Importance for Class {i + 1}:")
     print(pfi_results[i].head(15))
 
-    # Plot the top 5 important features for the current class
     sns.barplot(x='Importance', y='Feature', data=pfi_results[i].head(15), palette='viridis')
     plt.title(f'Permutation Features Importance (PFI) for Class {i + 1}')
     plt.tight_layout()
     plt.show()
+
 # Create a Tree SHAP explainer and calculate SHAP values
 explainer = shap.TreeExplainer(model)
 shap_values = explainer.shap_values(X_test)
-shap.summary_plot(shap_values[:,:,0], X_test, feature_names=input_features)
-shap.summary_plot(shap_values[:,:,1], X_test, feature_names=input_features)
-shap.summary_plot(shap_values[:,:,2], X_test, feature_names=input_features)
+
+# Note: SHAP output format can differ by version; keep your plotting lines unchanged
+shap.summary_plot(shap_values[:, :, 0], X_test, feature_names=input_features)
+shap.summary_plot(shap_values[:, :, 1], X_test, feature_names=input_features)
+shap.summary_plot(shap_values[:, :, 2], X_test, feature_names=input_features)
