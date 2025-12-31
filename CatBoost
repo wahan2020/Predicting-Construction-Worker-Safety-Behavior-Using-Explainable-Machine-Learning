@@ -39,7 +39,7 @@ y_normalized = scb_scaler.fit_transform(y_raw.values.reshape(-1, 1)).flatten()
 
 # Categorize the target into 3 categories: Low behavior (0), Medium behavior (1), High behavior (2)
 def categorize_scb(value):
-    if 0 <= value <= 0.36:
+    if 0 <= value <= 0.33:
         return 0  # Low behavior (zero-indexed)
     elif 0.33 < value <= 0.67:
         return 1  # Medium behavior
